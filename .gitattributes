@@ -1,0 +1,6 @@
+* text=auto eol=lf
+# The DB is a text file (diffable, mergeable); media blobs are opaque binaries.
+data/metrics/media.json text eol=lf
+data/seed-manifest.json text eol=lf
+data/media/* binary
+*.wasm binary

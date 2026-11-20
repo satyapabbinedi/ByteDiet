@@ -1,0 +1,23 @@
+node_modules/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+.env*
+!.env.example
+.DS_Store
+Thumbs.db
+
+# Synced from node_modules/@ffmpeg/core by scripts/sync-ffmpeg-core.mjs (postinstall/predev/prebuild)
+public/ffmpeg/
+
+# Local-only working folders
+.npm-cache/
+.work/
+.fallow/
+.manus/
+.playwright-mcp/
+inputs/
+
+# Legacy pre-0.2 runtime storage (not tracked; point LOCAL_MEDIA_STORAGE_DIR at it to keep using it)
+storage/

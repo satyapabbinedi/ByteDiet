@@ -1,0 +1,9 @@
+{
+  "description": "Records and blobs that ship with the repo. `npm run db:reset` removes everything else.",
+  "ids": [
+    "78ee08ed-fce9-4c66-8d4b-817cd5dbb94a",
+    "9d517644-0256-4ddd-977c-e38f8d79b183",
+    "0d91ad8c-147e-4644-9149-480d49b65c4d",
+    "9c23679b-4a36-496e-a04a-72b6a3471fd4"
+  ]
+}
