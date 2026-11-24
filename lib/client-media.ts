@@ -4,6 +4,9 @@ import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import { classifyMedia } from './media-formats';
 import { decodeHeic, isHeifFile } from './heic';
+import { VIDEO_POLICY, ffmpegScaleFilter } from './video-encoding';
+import { compressVideoWithWebCodecs, webCodecsSupported, type WebCodecsEngine } from './webcodecs-video';
+import { encodeCanvasToWebp } from './webp-encoder';
 
 const MAX_IMAGE_EDGE = 1600;
 const WEBP_QUALITY = 0.78;
@@ -67,12 +70,12 @@ function toArrayBuffer(data: Uint8Array): ArrayBuffer {
 }
 
 export type MediaInfo = { width: number | null; height: number | null; duration: number | null };
-export type ImageEngine = 'canvas-webp' | 'libheif-wasm+canvas-webp' | 'ffmpeg.wasm';
+export type ImageEngine = 'canvas-webp' | 'libheif-wasm+canvas-webp' | 'canvas+libwebp-wasm' | 'libheif-wasm+libwebp-wasm' | 'ffmpeg.wasm';
 export type ImageResult = { file: File; engine: ImageEngine; inputWidth: number | null; inputHeight: number | null };
-
-export async function loadClientEncoder(onProgress?: (value: number) => void): Promise<void> {
-  await getEngine(onProgress);
-}
+export type VideoEngine = WebCodecsEngine | 'ffmpeg.wasm';
+export type VideoResult = { file: File; engine: VideoEngine };
+/** `loading` = the FFmpeg fallback core is being downloaded/compiled; `converting` = encoding is running. */
+export type VideoStage = 'loading' | 'converting';
 
 export async function readMediaInfo(file: File): Promise<MediaInfo> {
   if (classifyMedia(file.name, file.type)?.kind === 'image') {
@@ -101,18 +104,44 @@ export async function readMediaInfo(file: File): Promise<MediaInfo> {
   }
 }
 
-export async function compressVideoClient(file: File, onProgress?: (value: number) => void): Promise<File> {
+/**
+ * Video → H.264/AAC MP4 (≤ 720p, ≤ 30 fps). Tries WebCodecs first (hardware codecs, seconds instead of minutes) and
+ * only downloads the 32 MB FFmpeg WASM core when this browser cannot handle the file that way.
+ */
+export async function compressVideoClient(
+  file: File,
+  onProgress?: (value: number) => void,
+  onStage?: (stage: VideoStage) => void,
+): Promise<VideoResult> {
+  if (webCodecsSupported()) {
+    try {
+      onStage?.('converting');
+      const { data, engine } = await compressVideoWithWebCodecs(file, onProgress);
+      return { file: new File([data], outputName(file.name, 'mp4', 'media'), { type: 'video/mp4' }), engine };
+    } catch (error) {
+      console.warn('[media] WebCodecs could not convert this video; falling back to FFmpeg WASM.', error);
+      onProgress?.(0);
+    }
+  }
+  return { file: await compressVideoWithFfmpeg(file, onProgress, onStage), engine: 'ffmpeg.wasm' };
+}
+
+async function compressVideoWithFfmpeg(file: File, onProgress?: (value: number) => void, onStage?: (stage: VideoStage) => void): Promise<File> {
+  onStage?.('loading');
   const engine = await getEngine(onProgress);
+  onStage?.('converting');
   const input = safeName(file.name);
   const output = 'media-lab-output.mp4';
   try {
     await engine.writeFile(input, await fetchFile(file));
     await runFfmpeg(engine, [
-      '-i', input, '-map', '0:v:0', '-map', '0:a?',
-      '-vf', 'scale=min(1920\\,iw):min(1920\\,ih):force_original_aspect_ratio=decrease:force_divisible_by=2',
+      // Only the first audio track: phones add extra tracks (e.g. spatial audio) that FFmpeg cannot decode.
+      '-i', input, '-map', '0:v:0', '-map', '0:a:0?', '-map_metadata', '-1',
+      '-vf', ffmpegScaleFilter(), '-fpsmax', String(VIDEO_POLICY.maxFrameRate),
       // yuv420p: 10-bit / 4:2:2 sources (iPhone HDR, ProRes) otherwise yield MP4s browsers cannot play.
-      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28', '-pix_fmt', 'yuv420p',
-      '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', output,
+      '-c:v', 'libx264', '-preset', 'superfast', '-crf', '28',
+      '-maxrate', String(VIDEO_POLICY.maxVideoBitrate), '-bufsize', String(VIDEO_POLICY.maxVideoBitrate * 2), '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-b:a', String(VIDEO_POLICY.audioBitrate), '-movflags', '+faststart', output,
     ]);
     const data = await engine.readFile(output);
     if (typeof data === 'string' || data.byteLength === 0) throw new Error('Browser encoder returned no media bytes.');
@@ -201,9 +230,16 @@ export async function compressImageClient(file: File, onProgress?: (value: numbe
       let blob = await canvasToBlob(canvas, 'image/webp', WEBP_QUALITY);
       let engine = raster.engine;
       if (blob.type !== 'image/webp') {
-        // Safari ignores the requested type and silently returns PNG: encode it to WebP with FFmpeg instead.
-        blob = await ffmpegImageToWebp(await canvasToBlob(canvas, 'image/png'), onProgress);
-        engine = 'ffmpeg.wasm';
+        // Safari ignores the requested type and silently returns PNG: encode the pixels with libwebp WASM (~280 KB)
+        // rather than downloading the 32 MB FFmpeg core; FFmpeg remains the last resort.
+        try {
+          blob = await encodeCanvasToWebp(canvas, WEBP_QUALITY);
+          engine = raster.engine === 'canvas-webp' ? 'canvas+libwebp-wasm' : 'libheif-wasm+libwebp-wasm';
+        } catch (webpError) {
+          console.warn('[media] libwebp WASM failed; using FFmpeg for WebP.', webpError);
+          blob = await ffmpegImageToWebp(await canvasToBlob(canvas, 'image/png'), onProgress);
+          engine = 'ffmpeg.wasm';
+        }
       }
       onProgress?.(1);
       return {

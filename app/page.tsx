@@ -19,7 +19,7 @@ type Phase = 'idle' | 'reading' | 'loading' | 'converting' | 'storing' | 'comple
 const fmt = (n: number) => n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${(n / 1024).toFixed(1)} KB`;
 const pct = (n: number) => `${n.toFixed(2)}%`;
 const phaseText: Record<Phase, string> = {
-  idle: 'Ready', reading: 'Reading and inspecting file…', loading: 'Loading the local browser encoder…',
+  idle: 'Ready', reading: 'Reading and inspecting file…', loading: 'Loading the fallback browser encoder…',
   converting: 'Converting in your browser…', storing: 'Storing original and converted files locally…',
   complete: 'Conversion and local storage complete.', error: 'Could not process this file.',
 };
@@ -60,17 +60,15 @@ export default function Home() {
       const converter = await import('../lib/client-media');
       let inputInfo = { width: null as number | null, height: null as number | null, duration: null as number | null };
       try { inputInfo = await converter.readMediaInfo(file); } catch {}
-      if (classification.kind === 'video') {
-        setPhase('loading');
-        await converter.loadClientEncoder(value => setProgress(value));
-      }
       setPhase('converting');
       const startedAt = performance.now();
       let converted: File;
       let conversionEngine: string;
       if (classification.kind === 'video') {
-        converted = await converter.compressVideoClient(file, value => { setPhase('converting'); setProgress(value); });
-        conversionEngine = 'ffmpeg.wasm';
+        // WebCodecs first; the FFmpeg core is only downloaded ('loading' phase) if this browser needs the fallback.
+        const videoResult = await converter.compressVideoClient(file, value => setProgress(value), stage => { setPhase(stage); setProgress(null); });
+        converted = videoResult.file;
+        conversionEngine = videoResult.engine;
       } else {
         const imageResult = await converter.compressImageClient(file, value => setProgress(value));
         converted = imageResult.file;
